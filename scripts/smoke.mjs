@@ -183,6 +183,11 @@ for (const g of ['hour', 'day', 'week', 'month']) {
   assert(res.status === 200, `granularity ${g} -> ${res.body.range.granularity}`);
 }
 
+// identify() is fill-only: a later call can't rewrite the identity that is already stored
+await event(site.id, { t: 'identify', u: 'https://app.smoke-test.com/pricing', p: { email: 'attacker@evil.com', name: 'Mallory' }, vid, sid });
+const identified = (await call(`/api/sites/${site.id}/visitors/${vid}`)).body.visitor;
+assert(identified.email === 'jane@acme.com' && identified.name === 'Jane Doe', 'second identify() does not overwrite email or name');
+
 await call(`/api/sites/${site.id}`, { method: 'DELETE' });
 assert((await call(`/api/sites/${site.id}`)).status === 404, 'site deleted');
 console.log('\nAll smoke tests passed');
