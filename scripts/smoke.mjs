@@ -190,4 +190,15 @@ assert(identified.email === 'jane@acme.com' && identified.name === 'Jane Doe', '
 
 await call(`/api/sites/${site.id}`, { method: 'DELETE' });
 assert((await call(`/api/sites/${site.id}`)).status === 404, 'site deleted');
+// --- Auth hardening ---
+const login = (headers = {}, password = PASSWORD) =>
+  call('/api/auth/login', { method: 'POST', headers, body: JSON.stringify({ password }) });
+
+// Parallel guesses can't all slip under the lockout (a fake client IP keeps the real bucket clean).
+const ip = { 'cf-connecting-ip': `203.0.113.${1 + Math.floor(Math.random() * 250)}` };
+const burst = await Promise.all(Array.from({ length: 25 }, () => login(ip, 'wrong-' + crypto.randomUUID())));
+const locked = burst.filter((b) => b.status === 429).length;
+assert(locked >= 10, `parallel wrong passwords get locked out (${locked}/25 answered 429)`);
+assert((await login(ip)).status === 429, 'correct password is refused while the IP is locked out');
+
 console.log('\nAll smoke tests passed');
