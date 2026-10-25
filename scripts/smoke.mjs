@@ -190,6 +190,7 @@ assert(identified.email === 'jane@acme.com' && identified.name === 'Jane Doe', '
 
 await call(`/api/sites/${site.id}`, { method: 'DELETE' });
 assert((await call(`/api/sites/${site.id}`)).status === 404, 'site deleted');
+
 // --- Auth hardening ---
 const login = (headers = {}, password = PASSWORD) =>
   call('/api/auth/login', { method: 'POST', headers, body: JSON.stringify({ password }) });
@@ -200,5 +201,22 @@ const burst = await Promise.all(Array.from({ length: 25 }, () => login(ip, 'wron
 const locked = burst.filter((b) => b.status === 429).length;
 assert(locked >= 10, `parallel wrong passwords get locked out (${locked}/25 answered 429)`);
 assert((await login(ip)).status === 429, 'correct password is refused while the IP is locked out');
+
+// Logging out ends the session on the server: replaying the old cookie no longer works.
+assert((await login()).status === 200, 'login again');
+const oldCookie = cookie;
+assert((await call('/api/sites')).status === 200, 'session works');
+await call('/api/auth/logout', { method: 'POST' });
+cookie = oldCookie;
+assert((await call('/api/sites')).status === 401, 'cookie is revoked after logout');
+
+// Log out everywhere ends every other session too.
+await login();
+const laptop = cookie;
+await login();
+assert((await call('/api/auth/logout-all', { method: 'POST' })).status === 200, 'logout-all');
+cookie = laptop;
+assert((await call('/api/sites')).status === 401, 'other sessions are revoked by logout-all');
+assert((await call('/api/auth/logout-all', { method: 'POST' })).status === 401, 'logout-all needs a login');
 
 console.log('\nAll smoke tests passed');

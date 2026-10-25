@@ -31,11 +31,21 @@ app.post('/api/v1/goals', handleGoalApi);
 
 // ---------- login
 
-async function isLoggedIn(c: Context<AppEnv>) {
-  if (!c.env.SESSION_SECRET) return false;
+/**
+ * The id of the logged-in dashboard session, or null. The cookie must be correctly signed, unexpired
+ * AND still listed in admin_sessions, so logging out really ends the session on the server.
+ */
+async function sessionId(c: Context<AppEnv>): Promise<string | null> {
+  if (!c.env.SESSION_SECRET) return null;
   const value = await verifyToken(c.env.SESSION_SECRET, getCookie(c, AUTH_COOKIE));
-  return !!value && Number(value.split('.')[1]) > Date.now();
+  const [id, expires] = value?.split('.') ?? [];
+  const now = Date.now();
+  if (!id || !(Number(expires) > now)) return null;
+  const row = await c.env.DB.prepare('SELECT 1 AS ok FROM admin_sessions WHERE id = ? AND expires_at > ?').bind(id, now).first();
+  return row ? id : null;
 }
+
+const isLoggedIn = async (c: Context<AppEnv>) => (await sessionId(c)) !== null;
 
 app.post('/api/auth/login', async (c) => {
   if (!c.env.ADMIN_PASSWORD || !c.env.SESSION_SECRET) {
@@ -59,9 +69,14 @@ app.post('/api/auth/login', async (c) => {
     await new Promise((r) => setTimeout(r, 500));
     return c.json({ error: 'Wrong password' }, 401);
   }
-  await c.env.DB.prepare('DELETE FROM login_failures WHERE ip = ?').bind(ip).run();
-  const expires = Date.now() + AUTH_DAYS * 86_400_000;
-  setCookie(c, AUTH_COOKIE, await signToken(c.env.SESSION_SECRET, `admin.${expires}`), {
+  const id = randomId(16);
+  const expires = now + AUTH_DAYS * 86_400_000;
+  await c.env.DB.batch([
+    c.env.DB.prepare('DELETE FROM login_failures WHERE ip = ?').bind(ip),
+    c.env.DB.prepare('DELETE FROM admin_sessions WHERE expires_at < ?').bind(now),
+    c.env.DB.prepare('INSERT INTO admin_sessions (id, created_at, expires_at) VALUES (?, ?, ?)').bind(id, now, expires),
+  ]);
+  setCookie(c, AUTH_COOKIE, await signToken(c.env.SESSION_SECRET, `${id}.${expires}`), {
     httpOnly: true,
     secure: new URL(c.req.url).protocol === 'https:',
     sameSite: 'Lax',
@@ -71,7 +86,9 @@ app.post('/api/auth/login', async (c) => {
   return c.json({ ok: true });
 });
 
-app.post('/api/auth/logout', (c) => {
+app.post('/api/auth/logout', async (c) => {
+  const id = await sessionId(c);
+  if (id) await c.env.DB.prepare('DELETE FROM admin_sessions WHERE id = ?').bind(id).run();
   deleteCookie(c, AUTH_COOKIE, { path: '/' });
   return c.json({ ok: true });
 });
@@ -84,6 +101,13 @@ const requireAuth = async (c: Context<AppEnv>, next: Next) => {
   if (!(await isLoggedIn(c))) return c.json({ error: 'unauthorized' }, 401);
   await next();
 };
+
+// End every dashboard session on every device (e.g. after a stolen cookie or laptop).
+app.post('/api/auth/logout-all', requireAuth, async (c) => {
+  await c.env.DB.prepare('DELETE FROM admin_sessions').run();
+  deleteCookie(c, AUTH_COOKIE, { path: '/' });
+  return c.json({ ok: true });
+});
 app.use('/api/sites', requireAuth);
 app.use('/api/sites/*', requireAuth);
 
