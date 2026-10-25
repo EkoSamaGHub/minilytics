@@ -13,6 +13,14 @@ const AUTH_DAYS = 30;
 const MAX_FAILURES = 10;
 const LOCKOUT_MS = 15 * 60_000;
 
+// API responses are never sniffed, and (except the tracking endpoint) never cached.
+// Headers for the static dashboard live in public/_headers.
+app.use('/api/*', async (c, next) => {
+  await next();
+  c.header('X-Content-Type-Options', 'nosniff');
+  if (c.req.path !== '/api/event') c.header('Cache-Control', 'no-store');
+});
+
 // ---------- public: tracking, webhooks, server-side API
 
 app.use('/api/event', cors({ origin: '*', allowMethods: ['POST', 'OPTIONS'], maxAge: 86400 }));
